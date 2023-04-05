@@ -45,8 +45,9 @@ def train_one_epoch(model: torch.nn.Module,
         samples = samples.to(device, non_blocking=True)
 
         with torch.cuda.amp.autocast():
-            loss, _, _ = model(samples, mask_ratio=args.mask_ratio)
-
+            rec_loss, rot_img_loss, rot_img_acc, rot_patch_loss, rot_patch_acc, _, _ = model(samples, mask_ratio=args.mask_ratio)
+        
+        loss = rec_loss + rot_img_loss + rot_patch_loss
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -62,6 +63,11 @@ def train_one_epoch(model: torch.nn.Module,
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
+        metric_logger.update(rec_loss=rec_loss.item())
+        metric_logger.update(rot_img_loss=rot_img_loss.item())
+        metric_logger.update(rot_img_acc=rot_img_acc)
+        metric_logger.update(rot_patch_loss=rot_patch_loss.item())
+        metric_logger.update(rot_patch_acc=rot_patch_acc)
 
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)

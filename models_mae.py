@@ -13,6 +13,9 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+import copy
+import numpy as np
+import matplotlib.pyplot as plt
 
 from timm.models.vision_transformer import PatchEmbed, Block
 
@@ -25,11 +28,16 @@ class MaskedAutoencoderViT(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False):
+                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, 
+                 rot_pred=False, 
+                 rot_img=False, rot_img_tau=0, # rot_img_independent=False
+                 rot_patch=False, rot_patch_tau=0): # rot_patch_independent=False):
+        
         super().__init__()
 
         # --------------------------------------------------------------------------
         # MAE encoder specifics
+        self.patch_size = patch_size
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
         num_patches = self.patch_embed.num_patches
 
@@ -59,6 +67,25 @@ class MaskedAutoencoderViT(nn.Module):
         # --------------------------------------------------------------------------
 
         self.norm_pix_loss = norm_pix_loss
+
+        self.rot_img = rot_img
+        self.rot_patch = rot_patch
+        self.rot_pred = rot_pred
+
+
+        if self.rot_pred:
+            if self.rot_img:
+                self.rot_img_tau = rot_img_tau
+                self.pred_rot_img_head = nn.Sequential(
+                    nn.Linear(embed_dim, embed_dim, bias=True), 
+                    nn.ReLU(), nn.Linear(embed_dim, 4, bias=True)
+                )
+            if self.rot_patch:
+                self.rot_patch_tau = rot_patch_tau
+                self.pred_rot_patch_head = nn.Sequential(
+                    nn.Linear(embed_dim, embed_dim, bias=True), 
+                    nn.ReLU(), nn.Linear(embed_dim, 4, bias=True)
+                )
 
         self.initialize_weights()
 
@@ -145,7 +172,7 @@ class MaskedAutoencoderViT(nn.Module):
         # unshuffle to get the binary mask
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        return x_masked, mask, ids_restore
+        return x_masked, mask, ids_restore, ids_keep
 
     def forward_encoder(self, x, mask_ratio):
         # embed patches
@@ -155,7 +182,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = x + self.pos_embed[:, 1:, :]
 
         # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -167,7 +194,7 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x)
         x = self.norm(x)
 
-        return x, mask, ids_restore
+        return x, mask, ids_restore, ids_keep
 
     def forward_decoder(self, x, ids_restore):
         # embed tokens
@@ -213,11 +240,128 @@ class MaskedAutoencoderViT(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, mask_ratio=0.75):
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
+    def forward(self, origin_imgs, mask_ratio=0.75):
+        transformed_imgs = None
+
+        if self.rot_img:
+            rot_imgs, rot_img_gt = self.rotate_img(origin_imgs)
+            transformed_imgs = rot_imgs
+        if self.rot_patch:
+            transformed_imgs, rot_patch_gt = self.rotate_patch(rot_imgs if self.rot_img else origin_imgs)  
+
+        imgs = transformed_imgs if transformed_imgs != None else origin_imgs
+        latent, mask, ids_restore, ids_keep = self.forward_encoder(imgs, mask_ratio)
+        
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
-        return loss, pred, mask
+        
+        target_imgs = origin_imgs 
+        if self.rot_img:
+            target_imgs = rot_imgs
+
+        rec_loss = self.forward_loss(target_imgs, pred, mask) 
+
+        rot_patch_loss, rot_patch_acc, rot_img_loss, rot_img_acc = \
+            [torch.tensor(0.,device=imgs.device) for _ in range(4)]
+        if self.rot_pred:
+            if self.rot_img:
+                rot_img_loss, rot_img_acc = self.predict_img_rot(latent, rot_img_gt)
+            if self.rot_patch:
+                rot_patch_loss, rot_patch_acc = self.predict_patch_rot(latent, ids_keep, rot_patch_gt)
+
+        return rec_loss, rot_img_loss, rot_img_acc, rot_patch_loss, rot_patch_acc, pred, mask
+    
+    def rotate_img(self, origin_imgs):
+        imgs = copy.deepcopy(origin_imgs) # imgs : b c H W -> b c h p w p
+        
+        angle = torch.randint(4, (imgs.shape[0],), device=imgs.device)
+        for i in range(4):
+            imgs[angle==i] = torch.rot90(imgs[angle==i], i, [-2,-1])
+
+        # x = torch.stack([imgs[i] for i in range(4)])
+        # x = x * 0.5 + 0.5 #unnorm
+        # for i, img in enumerate(x):
+        #     img = img.cpu().numpy()
+        #     plt.imshow(np.transpose(img,(1,2,0)))
+        #     plt.savefig("{}_allrotate.png".format(i))
+        # x = torch.stack([origin_imgs[i] for i in range(4)])
+        # x = x * 0.5 + 0.5 #unnorm
+        # for i, img in enumerate(x):
+        #     img = img.cpu().numpy()
+        #     plt.imshow(np.transpose(img,(1,2,0)))
+        #     plt.savefig("{}.png".format(i))
+        # print(angle[0:4])
+        # print(test)
+
+        return imgs, angle
+    
+    def predict_img_rot(self, latent, rot_gt):
+        x = latent[:, 0, :] # get cls token, b 1+l*r ed -> b ed
+        N, D = x.shape  # batch, dim
+
+        pred_rot = self.pred_rot_img_head(x) # b ed -> b 4
+
+        # rot_gt : b
+        accuracy = (torch.argmax(pred_rot, dim=1) == rot_gt).sum() / rot_gt.shape[0]
+        accuracy = accuracy.item()
+
+        loss_fn = torch.nn.CrossEntropyLoss()
+        loss = loss_fn(pred_rot, rot_gt) * self.rot_img_tau # 重みの調整
+        return loss, accuracy
+
+
+    def rotate_patch(self, origin_imgs):
+        imgs = copy.deepcopy(origin_imgs)
+        p = self.patch_size
+        assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
+
+        h = w = imgs.shape[2] // p
+        x = imgs.reshape(shape=(imgs.shape[0], 3, h, p, w, p)) # x : b c H W -> b c h p w p
+        x = torch.einsum('nchpwq->nhwcpq', x) # x : b c h p w p -> b h w c p p
+        
+        angle = torch.randint(4, (imgs.shape[0], h, w), device=imgs.device)
+        # angle = torch.randint(4, (imgs.shape[0], 1, 1), device=imgs.device).repeat(1, h, w) # same direction
+
+        for i in range(4):
+            x[angle==i] = torch.rot90(x[angle==i],i,[-2,-1])
+
+        x = torch.einsum('nhwcpq->nchpwq', x) # x : b h w c p p -> b c h p w p
+        x = x.reshape(shape=(imgs.shape[0], imgs.shape[1], imgs.shape[2], imgs.shape[3])) # x : b c h p w p -> b c H W
+      
+        # x = torch.stack([x[i] for i in range(4)])
+        # x = x * 0.5 + 0.5 #unnorm
+        # for i, img in enumerate(x):
+        #     img = img.cpu().numpy()
+        #     plt.imshow(np.transpose(img,(1,2,0)))
+        #     plt.savefig("{}_rotate.png".format(i))
+        # x = torch.stack([origin_imgs[i] for i in range(4)])
+        # x = x * 0.5 + 0.5 #unnorm
+        # for i, img in enumerate(x):
+        #     img = img.cpu().numpy()
+        #     plt.imshow(np.transpose(img,(1,2,0)))
+        #     plt.savefig("{}.png".format(i))
+        # print(angle[0:4])
+        # print(test)
+
+        return x, angle
+    
+    def predict_patch_rot(self, latent, ids_keep, rot_gt):
+        # 各tokenから角度を予測
+        x = latent[:, 1:, :] # remove cls token, b 1+l*r ed -> b l*r ed
+        N, L, D = x.shape  # batch, length, dim
+        x = x.reshape(-1, D) # b l*r ed -> b*l*r ed
+
+        pred_rot = self.pred_rot_patch_head(x) # b*l*r ed -> b*l*r 4 
+
+        rot_gt = rot_gt.flatten(1) # rot_gt : b h w -> b h*w(l)
+        target = torch.gather(rot_gt, dim=1, index=ids_keep) # b l -> b l*r 
+        target = target.reshape(-1) # b l*r -> b*l*r
+
+        accuracy = (torch.argmax(pred_rot, dim=1) == target).sum() / target.shape[0]
+        accuracy = accuracy.item()
+
+        loss_fn = torch.nn.CrossEntropyLoss()
+        loss = loss_fn(pred_rot, target) * self.rot_patch_tau # 重みの調整
+        return loss, accuracy
 
 
 def mae_vit_base_patch16_dec512d8b(**kwargs):
@@ -227,6 +371,12 @@ def mae_vit_base_patch16_dec512d8b(**kwargs):
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
+def mae_vit_base_patch32_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=32, embed_dim=768, depth=12, num_heads=12,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
 
 def mae_vit_large_patch16_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(
@@ -246,5 +396,7 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
 
 # set recommended archs
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vit_base_patch32 = mae_vit_base_patch32_dec512d8b  # decoder: 512 dim, 8 blocks
+
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks

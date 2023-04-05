@@ -40,6 +40,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=400, type=int)
+    parser.add_argument('--save_epochs', default=20, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
@@ -101,6 +102,17 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
+    parser.add_argument('--dataset', default='IN1k',
+                        help='select dataset')
+    
+    parser.add_argument('--rot_pred', action='store_true')
+    parser.add_argument('--rot_img', action='store_true')
+    parser.add_argument('--rot_img_tau', default=0, type=float)
+    # parser.add_argument('--rot_img_independent', action='store_true')
+
+    parser.add_argument('--rot_patch', action='store_true')
+    parser.add_argument('--rot_patch_tau', default=0, type=float)
+    # parser.add_argument('--rot_patch_independent', action='store_true')
     return parser
 
 
@@ -125,7 +137,12 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    if args.dataset == "cifar":
+        dataset_train = datasets.CIFAR10('data', train=True, download=True, transform=transform_train)
+    elif args.dataset == "cifar_100":
+        dataset_train = datasets.CIFAR100('data', train=True, download=True, transform=transform_train)
+    else: 
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
 
     if True:  # args.distributed:
@@ -153,7 +170,11 @@ def main(args):
     )
     
     # define the model
-    model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
+    model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, 
+                 rot_pred=args.rot_pred, 
+                 rot_img=args.rot_img, rot_img_tau=args.rot_img_tau, # rot_img_independent=args.rot_img_independent,
+                 rot_patch=args.rot_patch, rot_patch_tau=args.rot_patch_tau)# rot_patch_independent=args.rot_patch_independent
+
 
     model.to(device)
 
@@ -194,7 +215,7 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and (epoch % args.save_epochs == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)

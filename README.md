@@ -1,3 +1,297 @@
+# 環境構築
+python3 -m venv mae_env
+source mae_env/bin/activate
+pip3 install torch==1.8.1+cu111 torchvision==0.9.1+cu111 torchaudio==0.8.1 -f https://download.pytorch.org/whl/lts/1.8/torch_lts.html
+
+pip3 install timm==0.3.2
+pip3 install tensorboard==2.12.0
+// pip3 install submitit==1.4.5
+pip3 install matplotlib==3.7.0
+pip3 install "numpy<1.24"
+
+https://github.com/facebookresearch/mae/issues/120
+https://github.com/facebookresearch/mae/issues/25
+nproc_per_node= の後はGPU数
+out
+--accum_iter  
+Accumulate gradient iterations (for increasing the effective batch size under memory constraints)
+   
+# imagenet pretrain
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir IN_base \
+--log_dir IN_base \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 200 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--data_path /srv/datasets/pytorch/ImageNet/
+
+# cifar pretrain
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_base \
+--log_dir cifar_base \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar
+
+// finetuneに大きなバグ発見(1000クラスになっていた)
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_base \
+    --log_dir finetune_cifar_base \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_base/checkpoint-599.pth \
+    --epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar 
+
+// linear
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_linprobe.py \
+    --output_dir lin_cifar_base \
+    --log_dir lin_cifar_base \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_base/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 \
+    --weight_decay 0.05 \
+    --dist_eval --dataset cifar --nb_classes 10
+
+
+// 32 
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_base_32 \
+--log_dir cifar_base_32 \
+--batch_size 64 \
+--model mae_vit_base_patch32 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--save_epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar
+
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_base_32 \
+    --log_dir finetune_cifar_base_32 \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch32 \
+    --finetune cifar_base_32/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+# cifar rot_pred_pretrain
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_pred \
+--log_dir cifar_rot_pred \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug --rot_pred --rot_head_depth 2 --rot_tau 0.1
+
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_pred \
+    --log_dir finetune_cifar_rot_pred \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_pred/checkpoint-599.pth \
+    --epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+// 32 
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_pred_32 \
+--log_dir cifar_rot_pred_32 \
+--batch_size 64 \
+--model mae_vit_base_patch32 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--save_epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug --rot_pred --rot_head_depth 2 --rot_tau 0.1
+
+(aoba)
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_pred_32 \
+    --log_dir finetune_cifar_rot_pred_32 \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch32 \
+    --finetune cifar_rot_pred_32/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+
+## -3
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_pred_-3 \
+--log_dir cifar_rot_pred_-3 \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug True --rot_pred True --rot_head_depth 2 --rot_tau 0.001
+
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_pred_-3 \
+    --log_dir finetune_cifar_rot_pred_-3 \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_pred_-3/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+# 3-3
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_pred_3-3 \
+--log_dir cifar_rot_pred_3-3 \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--save_epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug True --rot_pred True --rot_head_depth 3 --rot_tau 0.001
+
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_pred_3-3 \
+    --log_dir finetune_cifar_rot_pred_3-3 \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_pred_3-3/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+# cifar rot_aug_pretrain
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_aug \
+--log_dir cifar_rot_aug \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug True 
+
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_aug \
+    --log_dir finetune_cifar_rot_aug \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_aug/checkpoint-599.pth \
+    --epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+# img rot
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_img_pred \
+--log_dir cifar_rot_img_pred \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--save_epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug --rot_all_img --rot_pred --rot_head_depth 2 --rot_tau 0.1
+
+(kou)
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_img_pred \
+    --log_dir finetune_cifar_rot_img_pred \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_img_pred/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
+// aug (nene)
+OMP_NUM_THREADS=1 python3 -m torch.distributed.launch --nproc_per_node=4 main_pretrain.py \
+--output_dir cifar_rot_img_aug \
+--log_dir cifar_rot_img_aug \
+--batch_size 64 \
+--model mae_vit_base_patch16 \
+--norm_pix_loss \
+--mask_ratio 0.75 \
+--epochs 600 \
+--save_epochs 600 \
+--warmup_epochs 0 \
+--blr 1.5e-4 --weight_decay 0.05 \
+--dataset cifar \
+--rot_aug --rot_all_img --rot_head_depth 2 --rot_tau 0.1
+
+(next)
+OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=4 main_finetune.py \
+    --output_dir finetune_cifar_rot_img_aug \
+    --log_dir finetune_cifar_rot_img_aug \
+    --accum_iter 4 \
+    --batch_size 32 \
+    --model vit_base_patch16 \
+    --finetune cifar_rot_img_aug/checkpoint-599.pth \
+    --epochs 100 \
+    --save_epochs 100 \
+    --blr 5e-4 --layer_decay 0.65 \
+    --weight_decay 0.05 --drop_path 0.1 --mixup 0.8 --cutmix 1.0 --reprob 0.25 \
+    --dist_eval --dataset cifar
+
 ## Masked Autoencoders: A PyTorch Implementation
 
 <p align="center">
