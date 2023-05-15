@@ -140,7 +140,7 @@ def main(args):
     if args.dataset == "cifar":
         dataset_train = datasets.CIFAR10('data', train=True, download=True, transform=transform_train)
     elif args.dataset == "cifar_100":
-        dataset_train = datasets.CIFAR100('data', train=True, download=True, transform=transform_train)
+        dataset_train = datasets.CIFAR100('data_100', train=True, download=True, transform=transform_train)
     else: 
         dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)

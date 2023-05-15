@@ -23,8 +23,8 @@ def build_dataset(is_train, args):
     root = os.path.join(args.data_path, 'train' if is_train else 'val')
     if args.dataset == "cifar":
         dataset = datasets.CIFAR10('data', train=True, download=True, transform=transform)
-    elif args.dataset == "cifar100":
-        dataset = datasets.CIFAR100('data', train=True, download=True, transform=transform)
+    elif args.dataset == "cifar_100":
+        dataset = datasets.CIFAR100('data_100', train=True, download=True, transform=transform)
     else: 
         dataset = datasets.ImageFolder(root, transform=transform)
 

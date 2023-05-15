@@ -244,19 +244,16 @@ class MaskedAutoencoderViT(nn.Module):
         transformed_imgs = None
 
         if self.rot_img:
-            rot_imgs, rot_img_gt = self.rotate_img(origin_imgs)
-            transformed_imgs = rot_imgs
+            transformed_imgs, rot_img_gt = self.rotate_img(origin_imgs) 
         if self.rot_patch:
-            transformed_imgs, rot_patch_gt = self.rotate_patch(rot_imgs if self.rot_img else origin_imgs)  
+            transformed_imgs, rot_patch_gt = self.rotate_patch(origin_imgs)  
 
         imgs = transformed_imgs if transformed_imgs != None else origin_imgs
         latent, mask, ids_restore, ids_keep = self.forward_encoder(imgs, mask_ratio)
         
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         
-        target_imgs = origin_imgs 
-        if self.rot_img:
-            target_imgs = rot_imgs
+        target_imgs = transformed_imgs if self.rot_img else origin_imgs 
 
         rec_loss = self.forward_loss(target_imgs, pred, mask) 
 
